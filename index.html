@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Arcade Shooter — Single File</title>
+  <style>
+    :root{--bg:#0b1020;--fg:#e6eef8;--accent:#4ee3a1;--danger:#ff6b6b}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto, Helvetica, Arial;color:var(--fg);background:linear-gradient(180deg,#071029 0%, #081226 60%);}
+    #gameWrap{display:grid;place-items:center;height:100vh;padding:24px;box-sizing:border-box}
+    canvas{background:radial-gradient(ellipse at top,#071a2a 0%, #04101a 60%);border-radius:12px;box-shadow:0 10px 30px rgba(2,8,20,.6);}
+    .ui{width:820px;max-width:96vw;margin-top:12px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+    .panel{background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:8px;font-size:14px}
+    button{background:var(--accent);border:none;padding:8px 12px;border-radius:8px;color:#00221a;font-weight:700;cursor:pointer}
+    button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--fg)}
+    .muted{opacity:.8;font-size:13px}
+    header{display:flex;gap:12px;align-items:center}
+  </style>
+</head>
+<body>
+  <div id="gameWrap">
+    <div>
+      <canvas id="c" width="800" height="600"></canvas>
+      <div class="ui">
+        <div class="panel" id="status">Score: 0 &nbsp; Lives: 3 &nbsp; Wave: 1</div>
+        <div style="display:flex;gap:8px">
+          <button id="startBtn">Start / Restart</button>
+          <button class="secondary" id="pauseBtn">Pause</button>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-top:8px;max-width:820px">
+        <div class="muted">Controls: Arrow keys / A-D to move, Space to shoot, P to pause</div>
+        <div class="muted">Mobile: tap left/right side to move, double-tap to shoot</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// Arcade Shooter - Single File
+// Controls: Arrow keys / A-D to move, Space to shoot, P to pause
+// Copy this file and open in a browser to play.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width; const H = canvas.height;
+
+// UI
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+const pauseBtn = document.getElementById('pauseBtn');
+
+// Game state
+let keys = {};
+let mouse = {x:0,y:0,down:false};
+let running = false;
+let paused = false;
+let lastTime = 0;
+let entities = [];
+let player, spawnTimer = 0, wave = 1;
+let score = 0, highScore = Number(localStorage.getItem('shooter_high')||0);
+
+// Utility
+function rand(min,max){return Math.random()*(max-min)+min}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+
+// Entity base class
+class E{
+  constructor(x,y){this.x=x;this.y=y;this.dead=false}
+  update(dt){}
+  draw(ctx){}
+}
+
+// Player
+class Player extends E{
+  constructor(){super(W/2,H-70);this.w=28;this.h=36;this.speed=380;this.cool=0;this.coolMax=0.18;this.lives=3;this.inv=0}
+  update(dt){
+    if(this.inv>0) this.inv-=dt;
+    let dir=0;
+    if(keys.ArrowLeft||keys.a) dir-=1;
+    if(keys.ArrowRight||keys.d) dir+=1;
+    this.x += dir*this.speed*dt;
+    // clamp
+    this.x = clamp(this.x, this.w/2, W - this.w/2);
+    // shooting
+    this.cool -= dt;
+    if((keys.Space || keys.z || mouse.down) && this.cool <= 0){
+      this.cool = this.coolMax;
+      entities.push(new Bullet(this.x, this.y - this.h/2, -550, 'player'));
+      // small spread shot occasionally
+      if(Math.random()<0.18) entities.push(new Bullet(this.x-12, this.y - this.h/2, -520, 'player'));
+      if(Math.random()<0.12) entities.push(new Bullet(this.x+12, this.y - this.h/2, -520, 'player'));
+    }
+  }
+  draw(ctx){
+    ctx.save();
+    ctx.translate(this.x,this.y);
+    // ship body
+    ctx.fillStyle = this.inv>0 ? 'rgba(255,255,255,0.6)' : '#9be7ff';
+    roundRect(ctx, -15, -18, 30, 36, 6, true, false);
+    // cockpit
+    ctx.fillStyle = '#073047';
+    roundRect(ctx, -8, -12, 16, 18, 4, true, false);
+    // thruster
+    ctx.fillStyle = '#ffb36b';
+    ctx.fillRect(-6,16,12,6);
+    ctx.restore();
+  }
+}
+
+// Bullet
+class Bullet extends E{
+  constructor(x,y,vy,owner){super(x,y);this.vy=vy;this.r=4;this.owner=owner}
+  update(dt){this.y += this.vy*dt; if(this.y<-20||this.y>H+20) this.dead=true}
+  draw(ctx){ctx.beginPath();ctx.fillStyle = this.owner=='player' ? '#bfffbf' : '#ff8b8b';ctx.arc(this.x,this.y,this.r,0,Math.PI*2);ctx.fill()}
+}
+
+// Enemy
+class Enemy extends E{
+  constructor(x,y,type='basic'){super(x,y);this.type=type;this.w=30;this.h=26;this.hp= type=='basic'?1:3;this.speed= type=='basic'? 60:30;this.shootTimer=rand(1.2,3)}
+  update(dt){
+    this.y += this.speed*dt;
+    this.shootTimer -= dt;
+    if(this.shootTimer<=0){
+      this.shootTimer = rand(1.2,3.5);
+      entities.push(new Bullet(this.x, this.y+12, 180 + Math.random()*80, 'enemy'));
+    }
+    if(this.y > H+40) this.dead=true;
+  }
+  draw(ctx){ctx.save();ctx.translate(this.x,this.y);
+    // body
+    ctx.fillStyle = this.type=='basic' ? '#ff9fbf' : '#ffd36b';
+    roundRect(ctx,-this.w/2,-this.h/2,this.w,this.h,6,true,false);
+    // eye
+    ctx.fillStyle = '#301a1a';ctx.fillRect(-6,-6,12,12);
+    ctx.restore();
+  }
+}
+
+// Explosion (visual)
+class Explosion extends E{
+  constructor(x,y){super(x,y);this.t=0;this.life=0.45}
+  update(dt){this.t+=dt; if(this.t>this.life) this.dead=true}
+  draw(ctx){let p = this.t/this.life; ctx.beginPath(); ctx.fillStyle=`rgba(255,${Math.floor(160*(1-p))},0,${1-p})`; ctx.arc(this.x,this.y, 6+80*p, 0,Math.PI*2); ctx.fill()}
+}
+
+// Helpers
+function roundRect(ctx,x,y,w,h,r,fill,stroke){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);if(fill)ctx.fill();if(stroke)ctx.stroke();}
+
+// Collisions
+function hit(a,b){return Math.abs(a.x-b.x) < ( (a.w||a.r*2)/2 + (b.w||b.r*2)/2 ) && Math.abs(a.y-b.y) < ( (a.h||a.r*2)/2 + (b.h||b.r*2)/2 )}
+
+// Spawn logic
+function spawnWave(level){
+  let count = 6 + Math.floor(level*1.5);
+  for(let i=0;i<count;i++){
+    let x = 60 + i*( (W-120)/(count-1) );
+    let y = -40 - i*30 + rand(-80,80);
+    let type = Math.random() < Math.min(0.25, 0.05*level) ? 'tough' : 'basic';
+    entities.push(new Enemy(x,y,type));
+  }
+}
+
+// Game loop
+function update(ts){
+  if(!running || paused){ lastTime = ts; requestAnimationFrame(update); return }
+  let dt = Math.min(0.035,(ts - lastTime)/1000);
+  lastTime = ts;
+
+  // update entities
+  entities.forEach(e=>e.update(dt));
+
+  // collisions
+  for(let a of entities){
+    if(a.dead) continue;
+    if(a instanceof Bullet && a.owner=='player'){
+      for(let b of entities){
+        if(b instanceof Enemy && !b.dead && hit(a,b)){
+          a.dead=true; b.hp--; if(b.hp<=0){ b.dead=true; score += (b.type=='basic'?50:180); entities.push(new Explosion(b.x,b.y)); }
+        }
+      }
+    }
+    if(a instanceof Bullet && a.owner=='enemy'){
+      if(!player.inv && hit(a,player)){
+        a.dead=true; player.lives--; player.inv = 1.4; entities.push(new Explosion(player.x,player.y));
+        if(player.lives<=0){ // game over
+          running=false; if(score>highScore){ highScore = score; localStorage.setItem('shooter_high', highScore) }
+        }
+      }
+    }
+    if(a instanceof Enemy){
+      if(!player.inv && hit(a,player)){
+        a.dead=true; player.lives--; player.inv=1.4; entities.push(new Explosion(player.x,player.y));
+        if(player.lives<=0){ running=false; if(score>highScore){ highScore = score; localStorage.setItem('shooter_high', highScore) } }
+      }
+    }
+  }
+
+  // remove dead
+  entities = entities.filter(e=>!e.dead);
+
+  // keep player
+  if(!player) player = new Player();
+
+  // spawn more as waves
+  if(entities.filter(e=>e instanceof Enemy).length==0){ wave++; spawnWave(wave); }
+
+  // update player
+  player.update(dt);
+
+  // update UI
+  statusEl.textContent = `Score: ${score}  Lives: ${player.lives}  Wave: ${wave}  High: ${highScore}`;
+
+  // draw
+  render();
+  requestAnimationFrame(update);
+}
+
+function render(){
+  ctx.clearRect(0,0,W,H);
+  // stars
+  for(let i=0;i<80;i++){
+    let x = (i*37 + (Date.now()%1000))/1.2%W; let y = (i*19)%H; ctx.fillStyle='rgba(255,255,255,0.03)'; ctx.fillRect(x,y,1,1);
+  }
+
+  // entities
+  entities.forEach(e=>e.draw(ctx));
+  // player on top
+  if(player) player.draw(ctx);
+
+  // HUD
+  ctx.save(); ctx.font='14px ui-sans-serif,system-ui'; ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fillText(`Score ${score}`, 10, 20); ctx.restore();
+  if(!running){
+    ctx.save(); ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(0,H/2-60,W,120); ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.font='28px ui-sans-serif,system-ui'; ctx.fillText('Press Start to play', W/2, H/2 - 6); ctx.font='14px ui-sans-serif,system-ui'; ctx.fillText('Tip: Use Space to fire and dodge enemy bullets', W/2, H/2 + 20); ctx.restore();
+  }
+}
+
+// Input handlers
+window.addEventListener('keydown', e=>{ keys[e.key] = true; if(e.key==='p' || e.key==='P'){ togglePause(); } if(e.key===' '){ e.preventDefault(); } });
+window.addEventListener('keyup', e=>{ keys[e.key] = false; });
+canvas.addEventListener('mousedown', e=>{ mouse.down=true }); canvas.addEventListener('mouseup', e=>{ mouse.down=false });
+canvas.addEventListener('mousemove', e=>{ const r = canvas.getBoundingClientRect(); mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top });
+
+// Mobile simple controls: tap left/right half to move, double-tap to shoot
+let lastTap = 0;
+canvas.addEventListener('touchstart', e=>{
+  const t = e.touches[0]; const r = canvas.getBoundingClientRect(); const x = t.clientX - r.left;
+  if(Date.now()-lastTap < 300){ mouse.down = true; setTimeout(()=>mouse.down=false,80); }
+  lastTap = Date.now();
+  if(x < W/2) { keys.ArrowLeft = true; keys.ArrowRight = false } else { keys.ArrowRight = true; keys.ArrowLeft = false }
+});
+canvas.addEventListener('touchend', e=>{ keys.ArrowLeft=false; keys.ArrowRight=false });
+
+// Buttons
+startBtn.addEventListener('click', ()=>startGame());
+pauseBtn.addEventListener('click', ()=>togglePause());
+
+function startGame(){
+  // reset
+  running = true; paused=false; player = new Player(); entities = []; score = 0; wave = 0; spawnWave(1); wave = 1; lastTime = performance.now(); requestAnimationFrame(update);
+}
+function togglePause(){ paused = !paused; pauseBtn.textContent = paused ? 'Resume' : 'Pause'; }
+
+// initial spawn
+entities.push(new Enemy(W/2, -40));
+render();
+
+// expose fun controls for debugging (optional)
+window.__game = {entities, startGame};
+
+</script>
+</body>
+</html>
